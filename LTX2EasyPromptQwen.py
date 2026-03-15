@@ -11,6 +11,13 @@ import torch
 import gc
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except Exception:
+    OPENAI_AVAILABLE = False
+    print("[LTX2-Qwen] OpenAI library not available. Install with: pip install openai")
+
 
 # ── Audio analysis ────────────────────────────────────────────────────────────
 
@@ -1492,6 +1499,7 @@ Output ONLY the prompt. No preamble, no "Sure!", no "Here's your prompt:", no co
                 }),
             },
             "optional": {
+                "server_config": ("SERVER_CONFIG",),
                 "use_scene_context": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Enable or disable scene_context without disconnecting the wire.",
@@ -1824,7 +1832,7 @@ Output ONLY the prompt. No preamble, no "Sure!", no "Here's your prompt:", no co
         bypass, user_input, creativity, seed, control_after_generate,
         invent_dialogue, keep_model_loaded, offline_mode, frame_count,
         style_preset, portrait_mode, local_path,
-        use_scene_context=True, scene_context="", lora_triggers="",
+        server_config=None, use_scene_context=True, scene_context="", lora_triggers="",
         width=0, height=0, subject_count=0, negative_bias="",
         shot_angle="None — LLM decides", camera_movement="None — LLM decides",
         audio_input=None, audio_enabled=True, use_whisper=False,
@@ -1836,25 +1844,48 @@ Output ONLY the prompt. No preamble, no "Sure!", no "Here's your prompt:", no co
             neg = _build_negative_prompt("", user_input, is_portrait=portrait_mode, style_preset=style_preset)
             return (user_input.strip(), user_input.strip(), neg)
 
-        # ── VRAM prep ─────────────────────────────────────────────────────────
-        try:
-            import comfy.model_management as mm
-            mm.unload_all_models()
-            mm.soft_empty_cache()
-        except Exception:
-            pass
-        if torch.cuda.is_available():
-            gc.collect()
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-            torch.cuda.reset_peak_memory_stats()
-            torch.cuda.empty_cache()
-            a = torch.cuda.memory_allocated() / 1024**3
-            r = torch.cuda.memory_reserved()  / 1024**3
-            print(f"[LTX2-Qwen] Pre-run VRAM: {a:.2f}GB alloc / {r:.2f}GB reserved")
+        if server_config is not None:
+            if not OPENAI_AVAILABLE:
+                raise ImportError(
+                    "[LTX2-Qwen] OpenAI library required for inference server mode. "
+                    "Install with: pip install openai"
+                )
 
-        self.load_model(offline_mode=offline_mode, local_path=local_path)
+            inference_endpoint = server_config.get("url", "http://localhost:8000/v1")
+            inference_model = server_config.get("model_name", self.MODEL_HF_ID)
+            inference_api_key = server_config.get("api_key", "not-needed")
+
+            print(f"[LTX2-Qwen] Inference server mode ON - using endpoint: {inference_endpoint}")
+            print(f"[LTX2-Qwen] Model: {inference_model}")
+
+            if self.model is not None:
+                print("[LTX2-Qwen] Unloading local model (not needed for inference server)")
+                self.unload_model()
+
+            _using_inference_server = True
+        else:
+            _using_inference_server = False
+
+        # ── VRAM prep ─────────────────────────────────────────────────────────
+        if not _using_inference_server:
+            try:
+                import comfy.model_management as mm
+                mm.unload_all_models()
+                mm.soft_empty_cache()
+            except Exception:
+                pass
+            if torch.cuda.is_available():
+                gc.collect()
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                torch.cuda.reset_peak_memory_stats()
+                torch.cuda.empty_cache()
+                a = torch.cuda.memory_allocated() / 1024**3
+                r = torch.cuda.memory_reserved()  / 1024**3
+                print(f"[LTX2-Qwen] Pre-run VRAM: {a:.2f}GB alloc / {r:.2f}GB reserved")
+
+            self.load_model(offline_mode=offline_mode, local_path=local_path)
 
         # ── Style preset ──────────────────────────────────────────────────────
         preset_data            = self.STYLE_PRESETS.get(style_preset, ("", False))
@@ -2723,53 +2754,92 @@ Output ONLY the prompt. No preamble, no "Sure!", no "Here's your prompt:", no co
             )},
         ]
 
-        # ── Tokenise ──────────────────────────────────────────────────────────
-        try:
-            raw = self.tokenizer.apply_chat_template(
-                messages, return_tensors="pt",
-                add_generation_prompt=True, enable_thinking=False,
-            )
-        except TypeError:
-            # enable_thinking not supported by this tokenizer version — retry without it
-            print("[LTX2-Qwen] enable_thinking kwarg not supported — retrying without it")
-            raw = self.tokenizer.apply_chat_template(
-                messages, return_tensors="pt",
-                add_generation_prompt=True,
-            )
-        if hasattr(raw, "input_ids"):
-            input_ids = raw.input_ids.to(self.model.device)
-        elif isinstance(raw, dict):
-            input_ids = raw["input_ids"].to(self.model.device)
-        elif isinstance(raw, list):
-            input_ids = torch.tensor([raw], dtype=torch.long).to(self.model.device)
-        else:
-            input_ids = raw.to(self.model.device)
-        input_length = input_ids.shape[1]
-
-        # ── Generate ──────────────────────────────────────────────────────────
-        try:
-            with torch.no_grad():
-                output_ids = self.model.generate(
-                    input_ids,
-                    max_new_tokens=max_tokens,
-                    temperature=temperature,
-                    do_sample=True,
-                    top_k=20,
-                    top_p=0.82,
-                    min_p=0.0,
-                    repetition_penalty=1.05,
-                    use_cache=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self._stop_token_ids,
+        if _using_inference_server:
+            try:
+                client = OpenAI(
+                    base_url=inference_endpoint,
+                    api_key=inference_api_key,
                 )
-        except Exception as e:
-            print(f"[LTX2-Qwen] Generation error: {e}")
-            self.unload_model()
-            raise
 
-        result = self.tokenizer.decode(output_ids[0][input_length:], skip_special_tokens=True).strip()
-        del output_ids, input_ids
-        gc.collect()
+                api_messages = [
+                    {"role": "system", "content": messages[0]["content"]},
+                    {"role": "user", "content": messages[1]["content"]},
+                ]
+
+                print("[LTX2-Qwen] Calling inference server...")
+                if seed != -1:
+                    print(f"[LTX2-Qwen] Using seed: {seed}")
+
+                extra_body = {}
+                seed_param = None
+                if seed != -1:
+                    extra_body["seed"] = seed
+                    seed_param = seed
+
+                response = client.chat.completions.create(
+                    model=inference_model,
+                    messages=api_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_p=0.82,
+                    frequency_penalty=0.05,
+                    seed=seed_param,
+                    extra_body=extra_body if extra_body else None,
+                )
+
+                result = response.choices[0].message.content.strip()
+                print(f"[LTX2-Qwen] Inference server response received ({len(result)} chars)")
+            except Exception as e:
+                print(f"[LTX2-Qwen] Inference server error: {e}")
+                raise
+        else:
+            # ── Tokenise ──────────────────────────────────────────────────────
+            try:
+                raw = self.tokenizer.apply_chat_template(
+                    messages, return_tensors="pt",
+                    add_generation_prompt=True, enable_thinking=False,
+                )
+            except TypeError:
+                # enable_thinking not supported by this tokenizer version — retry without it
+                print("[LTX2-Qwen] enable_thinking kwarg not supported — retrying without it")
+                raw = self.tokenizer.apply_chat_template(
+                    messages, return_tensors="pt",
+                    add_generation_prompt=True,
+                )
+            if hasattr(raw, "input_ids"):
+                input_ids = raw.input_ids.to(self.model.device)
+            elif isinstance(raw, dict):
+                input_ids = raw["input_ids"].to(self.model.device)
+            elif isinstance(raw, list):
+                input_ids = torch.tensor([raw], dtype=torch.long).to(self.model.device)
+            else:
+                input_ids = raw.to(self.model.device)
+            input_length = input_ids.shape[1]
+
+            # ── Generate ──────────────────────────────────────────────────────
+            try:
+                with torch.no_grad():
+                    output_ids = self.model.generate(
+                        input_ids,
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=True,
+                        top_k=20,
+                        top_p=0.82,
+                        min_p=0.0,
+                        repetition_penalty=1.05,
+                        use_cache=True,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                        eos_token_id=self._stop_token_ids,
+                    )
+            except Exception as e:
+                print(f"[LTX2-Qwen] Generation error: {e}")
+                self.unload_model()
+                raise
+
+            result = self.tokenizer.decode(output_ids[0][input_length:], skip_special_tokens=True).strip()
+            del output_ids, input_ids
+            gc.collect()
 
         if not result or not result.strip():
             print("[LTX2-Qwen] Warning: empty generation — returning user input as fallback")
