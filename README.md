@@ -1,18 +1,23 @@
-<img width="1389" height="1042" alt="Screenshot 2026-03-06 154113" src="https://github.com/user-attachments/assets/4d096edd-5e4d-49c5-b0d6-9ba070206d54" />  
+<img width="1990" height="1076" alt="Screenshot 2026-03-17 220714" src="https://github.com/user-attachments/assets/3008f7a2-38e8-46bb-9dd3-3893a33b22f5" />
+<img width="1739" height="911" alt="Screenshot 2026-03-17 220917" src="https://github.com/user-attachments/assets/6a2cefae-2685-4121-aa5e-e26a221db160" />
+<img width="1707" height="785" alt="Screenshot 2026-03-17 220903" src="https://github.com/user-attachments/assets/804c1948-f75c-4518-ad94-7325b8fb1d92" />
+<img width="1686" height="1005" alt="Screenshot 2026-03-17 220849" src="https://github.com/user-attachments/assets/d87e4a12-e5bb-4c56-8a50-9c646cacfd46" />
+<img width="1924" height="1242" alt="Screenshot 2026-03-17 220818" src="https://github.com/user-attachments/assets/f340604a-7c4b-47ad-bd4f-4d5f26d1fd04" />
+<img width="1968" height="1339" alt="Screenshot 2026-03-17 220810" src="https://github.com/user-attachments/assets/34b4770c-2f49-4b62-b267-506b92120f0b" />
+<img width="1814" height="1223" alt="Screenshot 2026-03-17 220758" src="https://github.com/user-attachments/assets/17c2e056-4ade-4ac4-9c4c-a2e93ae3ac0f" />
+<img width="1832" height="1439" alt="Screenshot 2026-03-17 220750" src="https://github.com/user-attachments/assets/b45151b9-efb5-447c-bb7c-9229931c7ba1" />
+<img width="1890" height="1255" alt="Screenshot 2026-03-17 220730" src="https://github.com/user-attachments/assets/704faffe-b8e3-422d-adb3-0c1ee637a66d" />
 
-<img width="1312" height="678" alt="Screenshot 2026-03-06 154124" src="https://github.com/user-attachments/assets/04e82b2a-b20b-405c-b565-489e10cd1a6a" />
+## Remote Inference
 
-<img width="1555" height="1431" alt="Screenshot 2026-03-06 154436" src="https://github.com/user-attachments/assets/8ff30d9f-fcfd-4b67-b4a4-8a856518a311" />
+This branch also includes `LTX2 Inference Server Config`, which outputs a reusable `SERVER_CONFIG` value for OpenAI-compatible endpoints.
 
-<img width="1681" height="1106" alt="Screenshot 2026-03-06 154446" src="https://github.com/user-attachments/assets/12e5a0ad-6921-4586-9f44-96a5154e5000" />
+- Connect `LTX2 Inference Server Config` to `LTX2PromptArchitectQwen` to run text generation through a remote OpenAI-compatible API.
+- Connect the same config to `LTX2VisionDescribe` to run image description through a remote OpenAI-compatible API.
+- Leave `server_config` disconnected to keep the normal local-model behavior from `Pre-Extra-feature-Main`.
 
-<img width="1750" height="726" alt="Screenshot 2026-03-06 154501" src="https://github.com/user-attachments/assets/2e5be720-8b8a-4487-86a6-7379d04f311f" />
+## Requirements
 
-<img width="1370" height="489" alt="Screenshot 2026-03-06 154508" src="https://github.com/user-attachments/assets/f3abfe06-c3d4-46f0-9aed-9606d560040a" />
-
-<img width="1754" height="1061" alt="Screenshot 2026-03-06 154516" src="https://github.com/user-attachments/assets/a4efacd9-0b35-469e-b1bf-605eeaf58cf8" />
-
-<img width="1711" height="803" alt="Screenshot 2026-03-06 154524" src="https://github.com/user-attachments/assets/95b0cf20-ba8d-4b15-9874-67f20bf66083" />
-
-<img width="1671" height="747" alt="Screenshot 2026-03-06 154533" src="https://github.com/user-attachments/assets/41e8bdcd-54b1-4469-a003-32f327364f8f" />
+- Install `openai` for remote inference support.
+- Use an OpenAI-compatible endpoint URL, usually ending in `/v1`.
 

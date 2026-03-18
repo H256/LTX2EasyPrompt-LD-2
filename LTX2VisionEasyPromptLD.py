@@ -1,9 +1,9 @@
 import gc
 import os
-import torch
-import numpy as np
 import base64
 import io
+import torch
+import numpy as np
 from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
@@ -14,14 +14,12 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── OpenAI API client for inference server support ───────────────────────────
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
     print("[VisionDescribe] OpenAI library not available. Install with: pip install openai")
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def comfy_tensor_to_pil(tensor) -> Image.Image:
@@ -64,10 +62,9 @@ class LTX2VisionDescribe:
         return {
             "required": {
                 "image": ("IMAGE", {"tooltip": "Connect your starting image here. The vision model will analyse it and output a scene description for use with the Easy Prompt node."}),
-                "bypass": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "When ON: skips the vision model entirely and returns an empty string. "
-                               "Use this to disable the Vision node from your subgraph without rewiring."
+                "🖼 use image vision?": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "When ON: runs the vision model and outputs a scene description. Turn OFF to skip the vision model and return an empty string without rewiring."
                 }),
                 "model_name": (list(MODEL_OPTIONS.keys()), {
                     "default": "Qwen2.5-VL-3B — Fast (huihui abliterated)",
@@ -83,7 +80,7 @@ class LTX2VisionDescribe:
             },
             "optional": {
                 "server_config": ("SERVER_CONFIG", {
-                    "tooltip": "Optional: Wire LTX2 Inference Server Config node here to use remote vision inference instead of local models. If not connected, uses local transformer models."
+                    "tooltip": "Optional: connect LTX2 Inference Server Config to use an OpenAI-compatible remote endpoint."
                 }),
             },
         }
@@ -93,14 +90,19 @@ class LTX2VisionDescribe:
     FUNCTION      = "describe"
     CATEGORY      = "LTX2"
 
-    def describe(self, image, bypass, model_name, offline_mode, local_path):
+    def describe(self, image, **kwargs):
+        use_image_vision = kwargs.get("🖼 use image vision?", True)
+        model_name    = kwargs.get("model_name", list(MODEL_OPTIONS.keys())[0])
+        offline_mode  = kwargs.get("offline_mode", False)
+        local_path    = kwargs.get("local_path", "")
+        server_config = kwargs.get("server_config", None)
+        bypass = not use_image_vision
         if bypass:
-            print("[VisionDescribe] Bypassed — returning empty string.")
+            print("[VisionDescribe] Vision disabled — returning empty string.")
             return ("",)
 
         global _INSTANCE
 
-        # ── Inference server mode ─────────────────────────────────────────────────
         if server_config is not None:
             if not OPENAI_AVAILABLE:
                 raise ImportError(
@@ -108,17 +110,11 @@ class LTX2VisionDescribe:
                     "Install with: pip install openai"
                 )
 
-            # Extract settings from server_config dict
             inference_endpoint = server_config.get("url", "http://localhost:8000/v1")
-            inference_model = server_config.get("model_name", "huihui-ai/Qwen2.5-VL-3B-Instruct-abliterated")
+            inference_model = server_config.get("model_name", MODEL_OPTIONS[model_name])
             inference_api_key = server_config.get("api_key", "not-needed")
 
-            print(f"[VisionDescribe] Inference server mode ON — using endpoint: {inference_endpoint}")
-            print(f"[VisionDescribe] Model: {inference_model}")
-
-            # Unload any local model if loaded
             if _INSTANCE["model"] is not None:
-                print("[VisionDescribe] Unloading local model (not needed for inference server)")
                 try:
                     _INSTANCE["model"].to("cpu")
                 except Exception:
@@ -130,22 +126,15 @@ class LTX2VisionDescribe:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-            # Convert image to PIL and then to base64
             pil_image = comfy_tensor_to_pil(image)
-            print(f"[VisionDescribe] Image: {pil_image.size}")
-
-            # Convert PIL image to base64
             buffered = io.BytesIO()
             pil_image.save(buffered, format="PNG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-            try:
-                client = OpenAI(
-                    base_url=inference_endpoint,
-                    api_key=inference_api_key,
-                )
-
-                messages = [
+            client = OpenAI(base_url=inference_endpoint, api_key=inference_api_key)
+            response = client.chat.completions.create(
+                model=inference_model,
+                messages=[
                     {
                         "role": "system",
                         "content": (
@@ -159,38 +148,22 @@ class LTX2VisionDescribe:
                         "content": [
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{img_base64}"
-                                }
+                                "image_url": {"url": f"data:image/png;base64,{img_base64}"},
                             },
-                            {
-                                "type": "text",
-                                "text": DESCRIBE_PROMPT
-                            }
-                        ]
-                    }
-                ]
+                            {"type": "text", "text": DESCRIBE_PROMPT},
+                        ],
+                    },
+                ],
+                max_tokens=180,
+                temperature=0.3,
+                top_p=0.9,
+            )
+            description = response.choices[0].message.content.strip()
+            print(f"[VisionDescribe] Inference server mode ON — using endpoint: {inference_endpoint}")
+            print(f"[VisionDescribe] Model: {inference_model}")
+            print(f"[VisionDescribe] Output: {len(description.split())} words.")
+            return (description,)
 
-                print("[VisionDescribe] Calling inference server...")
-
-                response = client.chat.completions.create(
-                    model=inference_model,
-                    messages=messages,
-                    max_tokens=180,
-                    temperature=0.3,
-                    top_p=0.9,
-                )
-
-                description = response.choices[0].message.content.strip()
-                print(f"[VisionDescribe] Output: {len(description.split())} words.")
-
-                return (description,)
-
-            except Exception as e:
-                print(f"[VisionDescribe] Inference server error: {e}")
-                raise
-
-        # ── Local transformer model path ──────────────────────────────────────────
         hf_id = MODEL_OPTIONS[model_name]
 
         # ── Offline env ───────────────────────────────────────────────────────
